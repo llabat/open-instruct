@@ -71,7 +71,6 @@ from open_instruct.utils import (
 
 logger = get_logger(__name__)
 
-
 @dataclass
 class FlatArguments:
     """
@@ -272,6 +271,14 @@ class FlatArguments:
     clean_checkpoints_at_end: bool = field(
         default=True, metadata={"help": "Whether to clean up all previous checkpoints at the end of the run."}
     )
+    save_exported_checkpoints: bool = field(
+        default=False,
+        metadata={"help": "Also save eval-ready model exports at each checkpoint."},
+    )
+    exported_checkpoint_dir_name: str = field(
+        default="exported_checkpoints",
+        metadata={"help": "Subdirectory inside output_dir where eval-ready checkpoint exports are stored."},
+    )
 
     # Experiment tracking
     with_tracking: bool = False
@@ -350,6 +357,31 @@ class FlatArguments:
                 # Convert str values to types if applicable
                 loaded_dict = _convert_str_dict(loaded_dict)
                 setattr(self, dict_feld, loaded_dict)
+
+def save_exportable_checkpoint(
+    args: FlatArguments,
+    accelerator: Accelerator,
+    model: torch.nn.Module,
+    tokenizer: transformers.PreTrainedTokenizer,
+    checkpoint_name: str,
+    tc: TokenizerConfig,
+) -> None:
+    export_root = os.path.join(args.output_dir, args.exported_checkpoint_dir_name)
+    export_dir = os.path.join(export_root, checkpoint_name)
+    os.makedirs(export_dir, exist_ok=True)
+
+    save_with_accelerate(
+        accelerator=accelerator,
+        model=model,
+        tokenizer=tokenizer,
+        output_dir=export_dir,
+        use_lora=args.use_lora,
+        chat_template_name=tc.chat_template_name,
+    )
+
+    if accelerator.is_main_process:
+        with open(os.path.join(export_dir, "COMPLETED"), "w") as f:
+            f.write("COMPLETED")
 
 
 def _create_scheduler(args: FlatArguments, optimizer, num_training_steps: int):
@@ -972,12 +1004,33 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     total_aux_loss = 0
 
                 if isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps}"
+                    checkpoint_name = f"step_{completed_steps}"
+                    resume_dir = checkpoint_name
                     if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
-                    with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
-                        f.write("COMPLETED")
+                        resume_dir = os.path.join(args.output_dir, checkpoint_name)
+
+                    # Save resumable training state
+                    accelerator.save_state(resume_dir)
+                    accelerator.wait_for_everyone()
+
+                    # Mark resumable checkpoint as complete
+                    if accelerator.is_main_process:
+                        with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
+                            f.write("COMPLETED")
+                    accelerator.wait_for_everyone()
+
+                    # Save eval-ready export
+                    if args.save_exported_checkpoints and args.output_dir is not None:
+                        save_exportable_checkpoint(
+                            args=args,
+                            accelerator=accelerator,
+                            model=model,
+                            tokenizer=tokenizer,
+                            checkpoint_name=checkpoint_name,
+                            tc=tc,
+                        )
+                    accelerator.wait_for_everyone()
+
                     if accelerator.is_local_main_process:
                         clean_last_n_checkpoints(args.output_dir, args.keep_last_n_checkpoints)
                     accelerator.wait_for_everyone()
@@ -986,13 +1039,34 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     break
 
         if checkpointing_steps == "epoch":
-            output_dir = f"epoch_{epoch}"
+            checkpoint_name = f"epoch_{epoch}"
+            resume_dir = checkpoint_name
             if args.output_dir is not None:
-                output_dir = os.path.join(args.output_dir, output_dir)
-            accelerator.save_state(output_dir)
+                resume_dir = os.path.join(args.output_dir, checkpoint_name)
+
+            # Save resumable training state
+            accelerator.save_state(resume_dir)
+            accelerator.wait_for_everyone()
+
             # use this to mark the checkpoint as completely saved, to avoid restoring from garbled checkpoints
-            with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
-                f.write("COMPLETED")  # annoyingly, empty files arent uploaded by beaker.
+            if accelerator.is_main_process:
+
+                with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
+                    f.write("COMPLETED")  # annoyingly, empty files arent uploaded by beaker.
+            accelerator.wait_for_everyone()
+
+            # Save eval-ready export
+            if args.save_exported_checkpoints and args.output_dir is not None:
+                save_exportable_checkpoint(
+                    args=args,
+                    accelerator=accelerator,
+                    model=model,
+                    tokenizer=tokenizer,
+                    checkpoint_name=checkpoint_name,
+                    tc=tc,
+                )
+            accelerator.wait_for_everyone()
+
             if accelerator.is_local_main_process:
                 clean_last_n_checkpoints(args.output_dir, args.keep_last_n_checkpoints)
             accelerator.wait_for_everyone()
