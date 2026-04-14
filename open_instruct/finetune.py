@@ -557,7 +557,11 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     # HF hub cache concurrently.
     model_path = args.config_name or args.model_name_or_path
     if model_path and accelerator.is_main_process:
-        snapshot_download(model_path, revision=args.model_revision)
+        # Check if the path is a local directory before trying to download
+        if os.path.isdir(model_path):
+            logger.info(f"Model path '{model_path}' is a local directory. Skipping snapshot_download.")
+        else:
+            snapshot_download(model_path, revision=args.model_revision)
     accelerator.wait_for_everyone()
 
     # Load pretrained model and tokenizer
