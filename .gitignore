@@ -161,3 +161,11 @@ cache/
 local_dataset_cache/
 scratch/
 .claude/worktrees/
+.claude/settings.local.json
+
+# Local reproduction checkpoints/logs (large binaries, not source)
+/logs/
+/paper_backups/
+/retrain_fft/
+/retrain_fft_dense_steps/
+/retrain_lora/

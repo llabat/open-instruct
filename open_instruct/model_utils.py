@@ -18,6 +18,7 @@ import asyncio
 import functools
 import importlib.util
 import itertools
+import json
 import pathlib
 import tempfile
 from collections import OrderedDict, defaultdict
@@ -582,6 +583,18 @@ def save_with_accelerate(
 
     if accelerator.is_main_process:
         tokenizer.save_pretrained(output_dir)
+        # Some tokenizer backends (e.g. TokenizersBackend on Jean Zay) do not serialize
+        # the chat_template attribute to tokenizer_config.json on save_pretrained.
+        # Write it explicitly so HuggingFace tooling (OLMES, vLLM, etc.) can read it.
+        if getattr(tokenizer, "chat_template", None) is not None:
+            config_path = os.path.join(output_dir, "tokenizer_config.json")
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    cfg = json.load(f)
+                if "chat_template" not in cfg:
+                    cfg["chat_template"] = tokenizer.chat_template
+                    with open(config_path, "w") as f:
+                        json.dump(cfg, f, indent=2)
     # customize model card (TODO (Costa): this can be prettier)
 
 

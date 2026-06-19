@@ -251,6 +251,29 @@ class FlatArguments:
         default=None,
         metadata={"help": "If set, overrides the number of training steps. Otherwise, num_train_epochs is used."},
     )
+    # WHY stop_at_step EXISTS (do not remove this comment):
+    #
+    # Using --max_train_steps to cap training at N steps is NOT equivalent to running
+    # only the first N steps of a full run, because it changes the LR scheduler horizon.
+    # Specifically, when max_train_steps is passed explicitly, overrode_max_train_steps=False
+    # and num_training_steps_for_scheduler = max_train_steps * num_processes (see below).
+    # When max_train_steps is derived from num_train_epochs, overrode_max_train_steps=True
+    # and num_training_steps_for_scheduler = max_train_steps (no num_processes factor).
+    # The two code paths give different scheduler horizons, so the LR curve differs.
+    #
+    # stop_at_step breaks the early-exit condition away from scheduler setup:
+    # pass --num_train_epochs <same as original> (no --max_train_steps) so the scheduler
+    # is identical to the full run, and pass --stop_at_step N to halt at step N.
+    # This guarantees the LR schedule and data order are identical to what they would
+    # have been in the original longer run (exact parameter values still depend on
+    # hardware floating-point determinism).
+    stop_at_step: int | None = field(
+        default=None,
+        metadata={
+            "help": "If set, stop training after this many steps without affecting the LR scheduler horizon. "
+            "Useful for reproducing an exact prefix of a longer run (same scheduler, same data order)."
+        },
+    )
     seed: int = field(default=42, metadata={"help": "Random seed for initialization and dataset shuffling."})
     checkpointing_steps: str | None = field(
         default=None,
@@ -703,7 +726,31 @@ def main(args: FlatArguments, tc: TokenizerConfig):
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "layer_norm.weight"]
+    # Parameters whose names contain any of these strings will be placed in the no-decay
+    # group and trained without weight decay. The intent is to exclude bias terms and
+    # layer-norm / RMS-norm scale weights, which are typically small and benefit from
+    # being unconstrained.
+    #
+    # BUG FIX (2026-04): the original list only contained "layer_norm.weight", which does
+    # NOT match Llama 3.x / Llama-style models. Those models use RMSNorm and name their
+    # norm parameters "input_layernorm.weight", "post_attention_layernorm.weight", and
+    # "norm.weight" — none of which contain the substring "layer_norm.weight" (note the
+    # underscore between "layer" and "norm" is absent in the actual parameter names).
+    #
+    # As a result, the no-decay group was always empty for Llama models. DeepSpeed
+    # (since at least 0.16.2) silently removes empty optimizer param groups in
+    # engine.py before ZeRO initialisation. The LR scheduler, however, was already
+    # initialised with two groups, so its get_lr() kept returning two values while the
+    # optimizer only had one group. PyTorch 2.9 added strict=True to the zip() inside
+    # _update_lr(), which turned this silent mismatch into a hard crash:
+    #   ValueError: zip() argument 2 is longer than argument 1
+    #
+    # Fix: extend the list to cover the naming conventions used by Llama-style models.
+    # "layernorm.weight" catches e.g. input_layernorm.weight / post_attention_layernorm.weight.
+    # "norm.weight" catches the final model.norm.weight.
+    # The original "layer_norm.weight" is kept for backwards compatibility with models
+    # (e.g. GPT-2, older HF models) that do use that naming convention.
+    no_decay = ["bias", "layer_norm.weight", "layernorm.weight", "norm.weight"]
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
@@ -1039,7 +1086,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                         clean_last_n_checkpoints(args.output_dir, args.keep_last_n_checkpoints)
                     accelerator.wait_for_everyone()
 
-                if completed_steps >= args.max_train_steps:
+                # Use stop_at_step if set (early exit without touching the scheduler horizon),
+                # otherwise fall back to max_train_steps as usual.
+                early_stop_at = args.stop_at_step if args.stop_at_step is not None else args.max_train_steps
+                if completed_steps >= early_stop_at:
                     break
 
         if checkpointing_steps == "epoch":
