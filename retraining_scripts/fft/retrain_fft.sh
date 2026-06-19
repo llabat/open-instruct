@@ -63,6 +63,7 @@ srun uv run --no-sync --offline accelerate launch \
       --model_name_or_path /lustre/fsmisc/dataset/HuggingFace_Models/meta-llama/Llama-3.1-8B \
       --dataset_mixer_list /lustre/fsmisc/dataset/HuggingFace/allenai/tulu-3-sft-mixture 1.0 \
       --chat_template_name tulu \
+      --exp_name retrain_fft_sumloss \
       --per_device_train_batch_size 2 \
       --gradient_accumulation_steps 4 \
       --gradient_checkpointing true \
