@@ -279,7 +279,9 @@ class FlatArguments:
     checkpointing_steps: str | None = field(
         default=None,
         metadata={
-            "help": "Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch."
+            "help": "Whether the various states should be saved at the end of every n steps, 'epoch' for each "
+            "epoch, or a comma-separated list of specific step numbers to checkpoint at (e.g. '1000,5000,9000'). "
+            "When a list is given, keep_last_n_checkpoints is ignored and every listed checkpoint is kept."
         },
     )
     keep_last_n_checkpoints: int = field(
@@ -833,7 +835,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
     # Figure out how many steps we should save the Accelerator states
     checkpointing_steps = args.checkpointing_steps
     if checkpointing_steps is not None and str(checkpointing_steps).lower() != "epoch":
-        checkpointing_steps = int(checkpointing_steps)
+        if "," in str(checkpointing_steps):
+            checkpointing_steps = [int(s) for s in str(checkpointing_steps).split(",")]
+        else:
+            checkpointing_steps = int(checkpointing_steps)
 
     # Train!
     dp_world_size = accelerator.num_processes // args.sequence_parallel_size
@@ -1101,7 +1106,9 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     total_loss = 0
                     total_aux_loss = 0
 
-                if isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0:
+                if (isinstance(checkpointing_steps, int) and completed_steps % checkpointing_steps == 0) or (
+                    isinstance(checkpointing_steps, list) and completed_steps in checkpointing_steps
+                ):
                     checkpoint_name = f"step_{completed_steps}"
                     resume_dir = checkpoint_name
                     if args.output_dir is not None:
@@ -1131,7 +1138,7 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                         )
                     accelerator.wait_for_everyone()
 
-                    if accelerator.is_local_main_process:
+                    if accelerator.is_local_main_process and not isinstance(checkpointing_steps, list):
                         clean_last_n_checkpoints(args.output_dir, args.keep_last_n_checkpoints)
                     accelerator.wait_for_everyone()
 

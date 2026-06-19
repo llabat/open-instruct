@@ -74,7 +74,7 @@ srun uv run --no-sync --offline accelerate launch \
       --with_tracking \
       --report_to wandb \
       --logging_steps 50 \
-      --checkpointing_steps 1000 \
+      --checkpointing_steps "50,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,13000,14000" \
       --push_to_hub False \
       --hf_entity none \
       --hf_metadata_dataset "" \
