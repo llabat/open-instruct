@@ -52,7 +52,10 @@ echo "GPUS_PER_NODE=$GPUS_PER_NODE"
 echo "WORLD_SIZE=$WORLD_SIZE"
 
 srun uv run --no-sync --offline accelerate launch \
-    --config_file configs/ds_configs/deepspeed_zero3.yaml \
+    --use_deepspeed \
+    --deepspeed_config_file configs/ds_configs/stage3_no_offloading_accelerate.conf \
+    --deepspeed_multinode_launcher standard \
+    --mixed_precision bf16 \
     --num_machines $SLURM_NNODES \
     --num_processes $WORLD_SIZE \
     --machine_rank $SLURM_NODEID \
