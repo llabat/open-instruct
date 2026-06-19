@@ -71,6 +71,7 @@ from open_instruct.utils import (
 
 logger = get_logger(__name__)
 
+
 @dataclass
 class FlatArguments:
     """
@@ -295,8 +296,7 @@ class FlatArguments:
         default=True, metadata={"help": "Whether to clean up all previous checkpoints at the end of the run."}
     )
     save_exported_checkpoints: bool = field(
-        default=False,
-        metadata={"help": "Also save eval-ready model exports at each checkpoint."},
+        default=False, metadata={"help": "Also save eval-ready model exports at each checkpoint."}
     )
     exported_checkpoint_dir_name: str = field(
         default="exported_checkpoints",
@@ -352,8 +352,23 @@ class FlatArguments:
             "help": "Degree of Ulysses sequence parallelism. 1 means disabled. Requires DeepSpeed ZeRO-3 and flash attention."
         },
     )
+    # reduce_loss="sum" was removed in PR #1024 (commit bb98dbc) under the assumption it was
+    # no longer needed, but it is what the original Tulu-3 SFT recipe used (see
+    # scripts/train/tulu3/finetune_8b.sh at commit bb98dbc~1). With "mean", outputs.loss is
+    # normalized per-microbatch by that microbatch's own token count rather than by the full
+    # gradient-accumulation window's token count, which both changes the effective gradient
+    # scale relative to the LR the recipe was tuned for, and unevenly weights tokens across
+    # microbatches of different lengths. "sum" avoids both issues since it applies no
+    # per-microbatch normalization at all.
+    reduce_loss: str = field(
+        default="mean", metadata={"help": "How to reduce loss over tokens. Options are 'mean' or 'sum'."}
+    )
 
     def __post_init__(self):
+        if self.reduce_loss not in ["mean", "sum"]:
+            raise ValueError("reduce_loss must be either 'mean' or 'sum'")
+        if self.reduce_loss == "sum" and self.sequence_parallel_size > 1:
+            raise NotImplementedError("reduce_loss='sum' is not implemented for sequence_parallel_size > 1")
         if self.dataset_name is None and self.dataset_mixer is None and self.dataset_mixer_list is None:
             raise ValueError("Need either a dataset name, dataset mixer, or dataset mixer list.")
         if (
@@ -380,6 +395,7 @@ class FlatArguments:
                 # Convert str values to types if applicable
                 loaded_dict = _convert_str_dict(loaded_dict)
                 setattr(self, dict_feld, loaded_dict)
+
 
 def save_exportable_checkpoint(
     args: FlatArguments,
@@ -631,7 +647,10 @@ def main(args: FlatArguments, tc: TokenizerConfig):
         elif args.use_liger_kernel:
             from liger_kernel.transformers import AutoLigerKernelForCausalLM  # noqa: PLC0415
 
-            logger.info("Attempting to apply liger-kernel. fused_linear_cross_entropy=True")
+            # The fused kernel only computes a reduced loss and doesn't expose full logits,
+            # which the "sum" branch below needs to compute its own CrossEntropyLoss.
+            fused_linear_cross_entropy = args.reduce_loss == "mean"
+            logger.info(f"Attempting to apply liger-kernel. {fused_linear_cross_entropy=}")
 
             # Supported models: https://github.com/linkedin/Liger-Kernel/blob/main/src/liger_kernel/transformers/monkey_patch.py#L948
             model = AutoLigerKernelForCausalLM.from_pretrained(
@@ -643,7 +662,7 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                 low_cpu_mem_usage=args.low_cpu_mem_usage,
                 attn_implementation=model_utils.detect_hf_attn_implementation(),
                 # liger-kernel specific args
-                fused_linear_cross_entropy=True,
+                fused_linear_cross_entropy=fused_linear_cross_entropy,
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
@@ -912,7 +931,26 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                 else:
                     outputs = model(**batch, use_cache=False)
 
-                loss = outputs.loss
+                if args.reduce_loss == "mean":
+                    loss = outputs.loss
+                else:
+                    # reduce_loss == "sum": this ensures that we weight all tokens in the
+                    # dataset equally, rather than weighting each microbatch equally when
+                    # using gradient accumulation (or microbatches of unequal token counts).
+                    # See https://github.com/huggingface/transformers/issues/24725.
+                    logits = outputs.logits
+                    labels = batch["labels"]
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    del logits
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+                    shift_logits = shift_logits.view(-1, embedding_size)
+                    shift_labels = shift_labels.view(-1)
+                    shift_labels = shift_labels.to(shift_logits.device)
+                    loss = loss_fct(shift_logits, shift_labels)
+                    del shift_logits
+                    if args.load_balancing_loss:
+                        loss = loss + args.load_balancing_weight * outputs.aux_loss
                 del outputs
 
                 if args.sequence_parallel_size > 1:
@@ -952,7 +990,7 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     total_tokens_including_padding = accelerator.gather(total_token_including_padding).sum().item()
                     total_tokens_this_log_period = accelerator.gather(local_total_tokens_this_log_period).sum().item()
                     local_total_tokens_this_log_period.zero_()
-                    accelerator.gather(local_pred_tokens_this_log_period).sum().item()
+                    pred_tokens_this_log_period = accelerator.gather(local_pred_tokens_this_log_period).sum().item()
                     local_pred_tokens_this_log_period.zero_()
 
                     avg_tokens_per_batch = (
@@ -1012,11 +1050,20 @@ def main(args: FlatArguments, tc: TokenizerConfig):
                     #    period.  We want the avg over each optimizer step (which scales with the
                     #    global batch size), and the average loss per token and per prediction
                     #    token (which are roughly independent of global batch size).
-                    total_fwd_passes = (
-                        args.logging_steps * args.gradient_accumulation_steps * accelerator.num_processes
-                    )
-                    avg_loss = sum_loss / total_fwd_passes
-                    metrics_to_log["train_loss"] = avg_loss
+                    if args.reduce_loss == "mean":
+                        total_fwd_passes = (
+                            args.logging_steps * args.gradient_accumulation_steps * accelerator.num_processes
+                        )
+                        avg_loss = sum_loss / total_fwd_passes
+                        metrics_to_log["train_loss"] = avg_loss
+                    else:
+                        avg_loss = sum_loss / total_tokens_this_log_period
+                        avg_loss_per_pred_tok = sum_loss / pred_tokens_this_log_period
+                        total_optim_steps = args.logging_steps * accelerator.num_processes
+                        avg_sum_loss = sum_loss / total_optim_steps
+                        metrics_to_log["train_sum_loss"] = avg_sum_loss
+                        metrics_to_log["train_loss_per_total_tok"] = avg_loss
+                        metrics_to_log["train_loss_per_pred_tok"] = avg_loss_per_pred_tok
                     if args.verbose:
                         sec_per_step = (time.perf_counter() - start_time) / (completed_steps - resume_step)
                         steps_remaining = args.max_train_steps - completed_steps
@@ -1066,7 +1113,9 @@ def main(args: FlatArguments, tc: TokenizerConfig):
 
                     # Mark resumable checkpoint as complete
                     if accelerator.is_main_process:
-                        with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
+                        with open(
+                            os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w"
+                        ) as f:
                             f.write("COMPLETED")
                     accelerator.wait_for_everyone()
 
@@ -1104,7 +1153,6 @@ def main(args: FlatArguments, tc: TokenizerConfig):
 
             # use this to mark the checkpoint as completely saved, to avoid restoring from garbled checkpoints
             if accelerator.is_main_process:
-
                 with open(os.path.join(get_last_checkpoint_path(args, incomplete=True), "COMPLETED"), "w") as f:
                     f.write("COMPLETED")  # annoyingly, empty files arent uploaded by beaker.
             accelerator.wait_for_everyone()
