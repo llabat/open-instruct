@@ -8,8 +8,9 @@
 #SBATCH --gres=gpu:4            # 4 GPUs per node
 #SBATCH --cpus-per-task=96      # IDRIS recommended setting for H100
 #SBATCH --hint=nomultithread    # Disable hyperthreading as per slide
-#SBATCH --time=19:59:59
+#SBATCH --time=99:59:59
 #SBATCH --account=oag@h100      # Use your H100 account
+#SBATCH --qos=qos_gpu_h100-t4
 
 set -x
 
@@ -68,7 +69,10 @@ srun uv run --no-sync --offline accelerate launch \
       --max_seq_length 4096 \
       --learning_rate 5e-6 \
       --num_train_epochs 2 \
-      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft \
+      --reduce_loss sum \
+      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft_sumloss \
+      --with_tracking \
+      --report_to wandb \
       --logging_steps 50 \
       --checkpointing_steps 1000 \
       --push_to_hub False \
@@ -79,5 +83,4 @@ srun uv run --no-sync --offline accelerate launch \
       --preprocessing_num_workers 4 \
       --low_cpu_mem_usage True \
       --save_exported_checkpoints True \
-      --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache \
-      --resume_from_checkpoint /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft/step_7000
+      --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache
