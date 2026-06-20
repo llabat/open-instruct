@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=fft_tulu_sft
-#SBATCH --output=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_%j.out
-#SBATCH --error=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_%j.err
+#SBATCH --output=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_sumloss_%j.out
+#SBATCH --error=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_sumloss_%j.err
 #SBATCH --constraint=h100
 #SBATCH --nodes=4               # 4 nodes
 #SBATCH --ntasks-per-node=1     # One process per node
@@ -11,6 +11,8 @@
 #SBATCH --time=99:59:59
 #SBATCH --account=oag@h100      # Use your H100 account
 #SBATCH --qos=qos_gpu_h100-t4
+#SBATCH --mail-user=labat.loubeyre@gmail.com
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 set -x
 
@@ -67,6 +69,7 @@ srun uv run --no-sync --offline accelerate launch \
       --dataset_mixer_list /lustre/fsmisc/dataset/HuggingFace/allenai/tulu-3-sft-mixture 1.0 \
       --chat_template_name tulu \
       --exp_name retrain_fft_sumloss \
+      --wandb_entity leo-labat-sorbonne-university \
       --per_device_train_batch_size 2 \
       --gradient_accumulation_steps 4 \
       --gradient_checkpointing true \
