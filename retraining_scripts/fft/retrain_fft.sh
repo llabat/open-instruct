@@ -1,16 +1,15 @@
 #!/bin/bash
 #SBATCH --job-name=fft_tulu_sft
-#SBATCH --output=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_sumloss_%j.out
-#SBATCH --error=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_sumloss_%j.err
+#SBATCH --output=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_8node_%j.out
+#SBATCH --error=/lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/logs/retrain_fft_8node_%j.err
 #SBATCH --constraint=h100
-#SBATCH --nodes=4               # 4 nodes
+#SBATCH --nodes=8               # 8 nodes
 #SBATCH --ntasks-per-node=1     # One process per node
 #SBATCH --gres=gpu:4            # 4 GPUs per node
 #SBATCH --cpus-per-task=96      # IDRIS recommended setting for H100
 #SBATCH --hint=nomultithread    # Disable hyperthreading as per slide
-#SBATCH --time=99:59:59
+#SBATCH --time=19:59:59
 #SBATCH --account=oag@h100      # Use your H100 account
-#SBATCH --qos=qos_gpu_h100-t4
 #SBATCH --mail-user=labat.loubeyre@gmail.com
 #SBATCH --mail-type=BEGIN,END,FAIL
 
@@ -68,16 +67,17 @@ srun uv run --no-sync --offline accelerate launch \
       --model_name_or_path /lustre/fsmisc/dataset/HuggingFace_Models/meta-llama/Llama-3.1-8B \
       --dataset_mixer_list /lustre/fsmisc/dataset/HuggingFace/allenai/tulu-3-sft-mixture 1.0 \
       --chat_template_name tulu \
-      --exp_name retrain_fft_sumloss \
+      --exp_name retrain_fft_8node \
       --wandb_entity leo-labat-sorbonne-university \
-      --per_device_train_batch_size 2 \
+      --per_device_train_batch_size 1 \
       --gradient_accumulation_steps 4 \
       --gradient_checkpointing true \
       --max_seq_length 4096 \
       --learning_rate 5e-6 \
       --num_train_epochs 2 \
+      --seed 123 \
       --reduce_loss sum \
-      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft_sumloss \
+      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft_8node \
       --with_tracking \
       --report_to wandb \
       --logging_steps 50 \
@@ -90,4 +90,5 @@ srun uv run --no-sync --offline accelerate launch \
       --preprocessing_num_workers 4 \
       --low_cpu_mem_usage True \
       --save_exported_checkpoints True \
+      --clean_checkpoints_at_end False \
       --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache
