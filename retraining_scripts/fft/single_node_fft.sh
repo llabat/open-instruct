@@ -10,6 +10,8 @@
 #SBATCH --hint=nomultithread
 #SBATCH --time=19:59:59
 #SBATCH --account=oag@a100
+#SBATCH --mail-user=labat.loubeyre@gmail.com
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 set -x
 
@@ -29,22 +31,29 @@ export HF_DATASETS_OFFLINE=1
 export WANDB_MODE=offline
 
 uv run --no-sync --offline accelerate launch \
-    --config_file configs/ds_configs/deepspeed_zero3.yaml \
+    --use_deepspeed \
+    --deepspeed_config_file configs/ds_configs/stage3_no_offloading_accelerate.conf \
+    --deepspeed_multinode_launcher standard \
+    --mixed_precision bf16 \
     --num_machines 1 \
     --num_processes 8 \
     open_instruct/finetune.py \
       --model_name_or_path /lustre/fsmisc/dataset/HuggingFace_Models/meta-llama/Llama-3.1-8B \
       --dataset_mixer_list /lustre/fsmisc/dataset/HuggingFace/allenai/tulu-3-sft-mixture 1.0 \
       --chat_template_name tulu \
+      --exp_name retrain_fft_single_node \
+      --wandb_entity leo-labat-sorbonne-university \
       --per_device_train_batch_size 1 \
       --gradient_accumulation_steps 16 \
       --gradient_checkpointing true \
       --max_seq_length 4096 \
       --learning_rate 5e-6 \
       --num_train_epochs 2 \
-      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft_single \
+      --seed 123 \
+      --reduce_loss sum \
+      --output_dir /lustre/fswork/projects/rech/oag/unz84ar/programs/open-instruct/retrain_fft_single_node \
       --logging_steps 50 \
-      --checkpointing_steps 1000 \
+      --checkpointing_steps "50,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,13000,14000" \
       --push_to_hub False \
       --hf_entity none \
       --hf_metadata_dataset "" \
@@ -55,5 +64,4 @@ uv run --no-sync --offline accelerate launch \
       --save_exported_checkpoints True \
       --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache \
       --with_tracking \
-      --report_to wandb \
-      --wandb_project_name open_instruct_sft_reproduction
+      --report_to wandb

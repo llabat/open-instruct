@@ -91,4 +91,5 @@ srun uv run --no-sync --offline accelerate launch \
       --low_cpu_mem_usage True \
       --save_exported_checkpoints True \
       --clean_checkpoints_at_end False \
-      --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache
+      --dataset_local_cache_dir /lustre/fswork/projects/rech/oag/unz84ar/data/dataset_cache \
+      --use_fast False
